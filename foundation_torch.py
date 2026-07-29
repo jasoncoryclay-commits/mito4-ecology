@@ -139,6 +139,7 @@ if _TORCH:
                 nn.Linear(D_GRID, D_MODEL, bias=True), nn.LayerNorm(D_MODEL, bias=False),
                 nn.GELU(), nn.Linear(D_MODEL, D_MODEL, bias=True))
             self.pos_embed = nn.Embedding(MAX_SEQ, D_MODEL)
+            self.input_norm = nn.LayerNorm(D_MODEL, bias=False)   # checkpoint has input_norm.weight
             self.blocks = nn.ModuleList([_Block("ff", bias=False) for _ in range(N_LAYERS)])
             self.text_out_norm = nn.LayerNorm(D_MODEL, bias=False)
             self.text_out_proj = nn.Sequential(
@@ -147,6 +148,7 @@ if _TORCH:
 
         def forward(self, grid):                # (B,400)
             x = self.grid_proj(grid).unsqueeze(1)
+            x = self.input_norm(x)
             x = x + self.pos_embed(torch.zeros(x.shape[1], dtype=torch.long,
                                                device=x.device))
             for b in self.blocks:
