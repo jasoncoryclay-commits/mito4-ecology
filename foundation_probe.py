@@ -67,6 +67,74 @@ def grep_grid_hints(root):
             seen.add(k); out.append(h)
     return out[:80]
 
+def inspect_checkpoints(root):
+    """Deep-inspect the key .pt checkpoints so the adapter knows HOW to load them.
+    Reports: is it a full model / state_dict / dict-with-config; tensor key shapes;
+    and any grid-dim (400/20) or config clues. Requires torch; degrades if absent."""
+    out = {}
+    try:
+        import torch
+    except Exception as e:
+        return {"_torch_error": f"{type(e).__name__}: {e}"}
+    targets = [
+        "phase2_text_to_grid/best_text_to_grid.pt",
+        "phase3_grid_to_text_v3/best_grid_to_text.pt",
+        "phase3_spi_grids/final_grid_to_text.pt",
+        "phase2_spi_true/best_model.pt",
+        "final_model.pt", "best_pretrained.pt",
+    ]
+    for rel in targets:
+        path = os.path.join(root, rel)
+        if not os.path.exists(path):
+            continue
+        info = {"exists": True, "bytes": os.path.getsize(path)}
+        try:
+            obj = torch.load(path, map_location="cpu", weights_only=False)
+        except Exception as e:
+            try:
+                obj = torch.load(path, map_location="cpu", weights_only=True)
+                info["loaded_weights_only"] = True
+            except Exception as e2:
+                info["load_error"] = f"{type(e).__name__}: {e} | wo: {e2}"
+                out[rel] = info; continue
+        info["type"] = type(obj).__name__
+        if isinstance(obj, dict):
+            info["top_keys"] = list(obj.keys())[:25]
+            # find the actual state_dict (common wrappers)
+            sd = None
+            for k in ("state_dict", "model_state_dict", "model", "net", "weights"):
+                if k in obj and hasattr(obj[k], "items"):
+                    sd = obj[k]; info["state_dict_key"] = k; break
+            if sd is None and all(hasattr(v, "shape") for v in list(obj.values())[:3]):
+                sd = obj; info["state_dict_key"] = "<root>"
+            # config-ish entries
+            for k in ("config", "args", "hparams", "grid_dim", "grid_side",
+                      "vocab", "vocab_size", "d_model", "hidden"):
+                if k in obj:
+                    v = obj[k]
+                    info.setdefault("config", {})[k] = str(v)[:200]
+            if sd is not None:
+                items = list(sd.items())
+                info["n_tensors"] = len(items)
+                info["first_layers"] = [(k, list(v.shape)) for k, v in items[:6]
+                                        if hasattr(v, "shape")]
+                info["last_layers"] = [(k, list(v.shape)) for k, v in items[-6:]
+                                       if hasattr(v, "shape")]
+                # hunt for a 400 or 20x20 dimension in any tensor shape
+                dims = set()
+                for k, v in items:
+                    if hasattr(v, "shape"):
+                        for d in v.shape:
+                            dims.add(int(d))
+                info["has_dim_400"] = 400 in dims
+                info["has_dim_20"] = 20 in dims
+                info["notable_dims"] = sorted(d for d in dims if d in (20, 400, 401, 512, 768))
+        elif hasattr(obj, "state_dict"):
+            info["is_full_module"] = True
+            info["module_repr"] = repr(obj)[:600]
+        out[rel] = info
+    return out
+
 def try_import(root):
     """Best-effort: import likely entry modules and list their public API."""
     api = {}
@@ -108,6 +176,7 @@ def main():
         report["files"] = scan_files(root)
         report["grid_hints"] = grep_grid_hints(root)
         report["api"] = try_import(root)
+        report["checkpoints"] = inspect_checkpoints(root)
     except Exception:
         report["probe_error"] = traceback.format_exc()
 
@@ -124,8 +193,31 @@ def main():
                 print(f"     (import error: {info})")
             else:
                 print(f"     {info.get('kind','?'):5} {name}{info.get('sig','')}")
+    print("\n=== CHECKPOINT INSPECTION (how to load the real model) ===")
+    ck = report.get("checkpoints", {})
+    if ck.get("_torch_error"):
+        print("  torch not importable here:", ck["_torch_error"])
+    for rel, info in ck.items():
+        if rel.startswith("_"):
+            continue
+        print(f"\n  {rel}")
+        print(f"    type={info.get('type')}  n_tensors={info.get('n_tensors')}  "
+              f"has_400={info.get('has_dim_400')} has_20={info.get('has_dim_20')} "
+              f"notable_dims={info.get('notable_dims')}")
+        if info.get("state_dict_key"):
+            print(f"    state_dict at key: {info['state_dict_key']}")
+        if info.get("config"):
+            print(f"    config: {info['config']}")
+        if info.get("first_layers"):
+            print(f"    first layers: {info['first_layers']}")
+        if info.get("last_layers"):
+            print(f"    last  layers: {info['last_layers']}")
+        if info.get("module_repr"):
+            print(f"    MODULE (loadable directly!): {info['module_repr'][:300]}")
+        if info.get("load_error"):
+            print(f"    load_error: {info['load_error']}")
     print("\nFull report -> foundation_probe.json")
-    print("Next: python3 foundation_adapter.py --selftest   (adapter binds to this report)")
+    print("Send me the CHECKPOINT INSPECTION block and I'll bind the real encoder/decoder.")
 
 if __name__ == "__main__":
     main()
