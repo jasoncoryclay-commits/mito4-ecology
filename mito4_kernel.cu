@@ -2,7 +2,8 @@
 // Grid-resident spatial variant of the Minimal Integer Threshold Organism.
 //
 // Build:   nvcc -O3 -arch=sm_90 mito4_kernel.cu -o mito4          (sm_90 = Hopper/H100)
-// Run:     ./mito4 <H> <W> <ticks> <seed> <log_every>
+// Run:     ./mito4 <H> <W> <ticks> <seed> <log_every> [dump_every]
+//          dump_every > 0  -> write snapshot PGM images every N ticks (for H4)
 //
 // Design (matches mito4_ecology.py bit-for-bit in intent):
 //   * State is a FIXED HxW array of uint32 organisms -> no dynamic allocation,
@@ -19,6 +20,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <utility>   // std::swap
 #include <cuda_runtime.h>
 
@@ -160,12 +162,39 @@ __global__ void k_count(const uint32_t* grid, unsigned long long* alive_out,
 #define CK(call) do{ cudaError_t e=(call); if(e!=cudaSuccess){ \
     fprintf(stderr,"CUDA error %s:%d: %s\n",__FILE__,__LINE__,cudaGetErrorString(e)); exit(1);} }while(0)
 
+// ---- snapshot: write a downsampled threshold/occupancy map as a binary PGM ---
+// Produces an SxS grayscale image where pixel = mean threshold of live cells in
+// that block (0 if empty). Lets you SEE fronts / patches / waves for H4.
+static void dump_pgm(const uint32_t* grid, int H, int W, int seed, int tick){
+    const int S = 512;                        // output image is S x S (downsampled)
+    int bh = (H + S - 1) / S, bw = (W + S - 1) / S;
+    unsigned char* img = (unsigned char*)calloc((size_t)S*S, 1);
+    for(int by=0; by<S; by++){
+        for(int bx=0; bx<S; bx++){
+            long sum=0, cnt=0;
+            for(int y=by*bh; y<(by+1)*bh && y<H; y++)
+                for(int x=bx*bw; x<(bx+1)*bw && x<W; x++){
+                    uint32_t w = grid[(size_t)y*W+x];
+                    if((w>>24)&1u){ sum += (w>>8)&0xFFu; cnt++; }
+                }
+            img[by*S+bx] = cnt ? (unsigned char)(sum/cnt) : 0;
+        }
+    }
+    char fn[128];
+    snprintf(fn,sizeof(fn),"snapshot_seed%d_t%05d.pgm",seed,tick);
+    FILE* f = fopen(fn,"wb");
+    if(f){ fprintf(f,"P5\n%d %d\n255\n",S,S); fwrite(img,1,(size_t)S*S,f); fclose(f);
+           fprintf(stderr,"# wrote %s\n",fn); }
+    free(img);
+}
+
 int main(int argc, char** argv){
     int H = argc>1?atoi(argv[1]):4096;
     int W = argc>2?atoi(argv[2]):4096;
     int TICKS = argc>3?atoi(argv[3]):2000;
     uint32_t seed = argc>4?(uint32_t)atoi(argv[4]):1u;
     int log_every = argc>5?atoi(argv[5]):100;
+    int dump_every = argc>6?atoi(argv[6]):0;    // 0 = no image snapshots
     size_t N = (size_t)H*W;
 
     printf("MITO-4 ECOLOGY on GPU  |  %dx%d = %zu cells  |  %d ticks  |  seed %u\n",
@@ -229,7 +258,12 @@ int main(int argc, char** argv){
             int lineages=0; for(int k=0;k<8;k++) lineages+=__builtin_popcount(present[k]);
             double mthr = alive? (double)thrsum/alive : 0.0;
             printf("%d,%llu,%.2f,%d\n",t,alive,mthr,lineages);
+            fflush(stdout);
             if(alive==0){ printf("# extinction at tick %d\n",t); break; }
+        }
+        if(dump_every>0 && (t%dump_every==0 || t==TICKS-1)){
+            CK(cudaMemcpy(h_grid,d_grid,N*sizeof(uint32_t),cudaMemcpyDeviceToHost));
+            dump_pgm(h_grid,H,W,(int)seed,t);
         }
     }
     cudaEventRecord(t1); cudaEventSynchronize(t1);
