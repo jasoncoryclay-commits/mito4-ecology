@@ -8,8 +8,11 @@ Everything to go from a fresh GPU pod to scored results in one command.
 cd /workspace
 git clone https://github.com/jasoncoryclay-commits/mito4-ecology.git
 cd mito4-ecology
-bash run.sh
+bash run.sh              # or:  make run
 ```
+
+Prefer `make`? `make quick` smoke-tests the pod in seconds; `make run` does the full sweep;
+`make arch` prints the auto-detected GPU arch; `make analyze` re-scores existing results.
 
 That builds the kernel, runs an **8192 × 8192 = 67,108,864 organism** lattice for 5000 ticks
 across seeds 1–5, captures throughput, and (if matplotlib is present) writes plots + a scored
@@ -47,6 +50,11 @@ Per organism slot: 4 B grid + 8 B (two resource buffers) + 1 B wants ≈ **13 B*
 - 32768² (1.07B): ~14 GB  (still fits an 80 GB H100 with room to spare)
 
 ## Get results back to me
+
+Each run also writes a **GPU-utilization log** per seed (`results/gpu_util_seed*.csv`) sampled from
+`nvidia-smi` every 0.5s. `analyze.py` folds this into the scorecard as **H6 (GPU actually saturated)**
+with mean/median/p95/peak SM-util, peak memory, and mean power — the hard number on how hard the
+H100 was working.
 
 Easiest — push them to the repo:
 ```bash

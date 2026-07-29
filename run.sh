@@ -41,13 +41,39 @@ echo "[2/4] building (arch=${ARCH}) ..."
 nvcc -O3 -arch="${ARCH}" mito4_kernel.cu -o mito4
 echo "      built ./mito4"
 
+# ---- GPU utilization sampler (background) ----
+# Polls nvidia-smi every 0.5s while a run is in flight -> per-seed util CSV.
+GPU_LOG_PID=""
+start_gpu_log() {
+  local out="$1"
+  command -v nvidia-smi >/dev/null 2>&1 || return 0
+  echo "ts_s,util_gpu_pct,util_mem_pct,mem_used_mib,power_w,sm_clock_mhz" > "${out}"
+  (
+    while true; do
+      line=$(nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.used,power.draw,clocks.sm \
+             --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')
+      printf '%s,%s\n' "$(date +%s.%N)" "${line}" >> "${out}"
+      sleep 0.5
+    done
+  ) &
+  GPU_LOG_PID=$!
+}
+stop_gpu_log() {
+  [ -n "${GPU_LOG_PID}" ] && kill "${GPU_LOG_PID}" 2>/dev/null || true
+  GPU_LOG_PID=""
+}
+trap stop_gpu_log EXIT
+
 # ---- run sweep ----
 mkdir -p "${OUTDIR}"
 echo "[3/4] running seed sweep ..."
 for s in ${SEEDS}; do
   csv="${OUTDIR}/mito4_run_seed${s}.csv"
-  echo "  -> seed ${s}  (log -> ${csv})"
+  gpu="${OUTDIR}/gpu_util_seed${s}.csv"
+  echo "  -> seed ${s}  (log -> ${csv}, gpu -> ${gpu})"
+  start_gpu_log "${gpu}"
   ./mito4 "${H}" "${W}" "${TICKS}" "${s}" "${LOG_EVERY}" "${DUMP}" | tee "${csv}"
+  stop_gpu_log
 done
 # move any snapshot images into outdir
 shopt -s nullglob
