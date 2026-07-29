@@ -23,6 +23,7 @@ import numpy as np
 
 GRID_SIDE = 20
 GRID_CELLS = 400
+D_TEXT_DIM = 3072      # FOUNDATION's text-embedding dim (encoder input / decoder output)
 
 # candidate method names the real FOUNDATION model might expose for each direction
 ENCODE_NAMES = ["text_to_grid", "encode", "encode_text", "text_to_state",
@@ -48,13 +49,20 @@ def _normalize_to_grid(arr) -> np.ndarray:
 
 
 class FoundationAdapter:
-    def __init__(self, probe_json="foundation_probe.json", root=None, verbose=True):
+    def __init__(self, probe_json="foundation_probe.json", root=None, verbose=True,
+                 text_embedder=None):
         self.verbose = verbose
         self.model = None
         self.encode_fn = None
         self.decode_fn = None
         self.mode = "standin"          # "real" once a live model binds
         self.root = root
+        # text_embedder: callable(str)->np.ndarray(3072). Needed for the REAL encoder,
+        # whose input is a 3072-dim text embedding (not a raw string). If None, the
+        # real ENCODER cannot run from text; grid-space ops and the DECODER still work.
+        self.text_embedder = text_embedder
+        self._enc = self._dec = None   # torch modules once bound
+        self._device = "cpu"
         self._bind(probe_json)
 
     def _log(self, *a):
@@ -68,6 +76,14 @@ class FoundationAdapter:
                 root = json.load(open(probe_json)).get("root")
             except Exception:
                 root = None
+        # PATH 1: torch checkpoints (the real FOUNDATION shard is .pt files)
+        for p in ([root] if root else []) + ["/workspace/foundation_model"]:
+            if p and os.path.isdir(p) and self._try_bind_torch(p):
+                self.mode = "real"
+                self.root = p
+                self._log(f"bound REAL FOUNDATION (torch checkpoints) at {p}")
+                return
+        # PATH 2: importable modules (fallback for a code-based FOUNDATION)
         for p in ([root] if root else []) + ["/workspace/foundation_model"]:
             if p and os.path.isdir(p) and self._try_bind_dir(p):
                 self.mode = "real"
@@ -76,6 +92,38 @@ class FoundationAdapter:
                 return
         self._log("no live FOUNDATION model bound -> deterministic stand-in "
                   "(fine off-pod; run foundation_probe.py on the pod for the real one)")
+
+    def _try_bind_torch(self, root):
+        """Bind the real .pt checkpoints via foundation_torch (reconstructed modules)."""
+        enc_p = os.path.join(root, "phase2_text_to_grid/best_text_to_grid.pt")
+        dec_p = os.path.join(root, "phase3_grid_to_text_v3/best_grid_to_text.pt")
+        if not (os.path.exists(enc_p) or os.path.exists(dec_p)):
+            return False
+        try:
+            import torch
+            import foundation_torch as ft
+        except Exception as e:
+            self._log(f"torch/foundation_torch unavailable ({e}); not binding torch path")
+            return False
+        self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        bound = False
+        if os.path.exists(enc_p):
+            try:
+                self._enc, info = ft.load_encoder(enc_p, self._device)
+                self._log(f"encoder loaded (missing={len(info['missing'])} "
+                          f"unexpected={len(info['unexpected'])})")
+                bound = True
+            except Exception as e:
+                self._log(f"encoder load failed: {e}")
+        if os.path.exists(dec_p):
+            try:
+                self._dec, info = ft.load_decoder(dec_p, self._device)
+                self._log(f"decoder loaded (missing={len(info['missing'])} "
+                          f"unexpected={len(info['unexpected'])})")
+                bound = True
+            except Exception as e:
+                self._log(f"decoder load failed: {e}")
+        return bound
 
     def _try_bind_dir(self, root):
         """Try to import a module in root and locate encode/decode callables."""
@@ -121,24 +169,75 @@ class FoundationAdapter:
 
     # ---- the stable contract ----
     def text_to_grid(self, text: str) -> np.ndarray:
+        # real torch encoder: needs a 3072-dim text embedding
+        if self._enc is not None:
+            emb = self._embed(text)
+            if emb is not None:
+                try:
+                    import torch
+                    with torch.no_grad():
+                        t = torch.as_tensor(emb, dtype=torch.float32,
+                                            device=self._device).reshape(1, -1)
+                        out = self._enc(t).squeeze(0).detach().cpu().numpy()
+                    return _normalize_to_grid(out)
+                except Exception as e:
+                    self._log(f"real encode failed ({e}); stand-in for this call")
+        # legacy importable-fn encoder
         if self.mode == "real" and self.encode_fn:
             try:
                 out = self.encode_fn(text)
-                # torch tensor? -> numpy
                 if hasattr(out, "detach"):
                     out = out.detach().cpu().numpy()
                 return _normalize_to_grid(out)
             except Exception as e:
-                self._log(f"real encode failed ({e}); using stand-in for this call")
+                self._log(f"real encode failed ({e}); stand-in for this call")
         return self._standin_grid(text)
 
-    def grid_to_text(self, grid: np.ndarray):
-        if self.mode == "real" and self.decode_fn:
-            try:
-                return self.decode_fn(np.asarray(grid).reshape(GRID_SIDE, GRID_SIDE))
-            except Exception as e:
-                self._log(f"real decode failed ({e})")
-        return None  # stand-in has no faithful inverse; return None (caller handles)
+    def grid_to_embedding(self, grid: np.ndarray):
+        """REAL decoder: grid(400) -> 3072-dim text embedding (contrastive space).
+        Compare against a concept bank to name it (see grid_to_text)."""
+        if self._dec is None:
+            return None
+        try:
+            import torch
+            with torch.no_grad():
+                g = torch.as_tensor(np.asarray(grid).ravel()[:GRID_CELLS],
+                                    dtype=torch.float32, device=self._device).reshape(1, -1)
+                return self._dec(g).squeeze(0).detach().cpu().numpy()
+        except Exception as e:
+            self._log(f"real decode failed ({e})")
+            return None
+
+    def grid_to_text(self, grid: np.ndarray, concept_bank: dict | None = None):
+        """Name a grid by nearest concept in an embedding bank {name: emb(3072)}.
+        Without a bank, returns the raw embedding (caller matches). None if no decoder."""
+        emb = self.grid_to_embedding(grid)
+        if emb is None:
+            return None
+        if not concept_bank:
+            return emb
+        # cosine nearest
+        best, bestcos = None, -1e9
+        for name, e in concept_bank.items():
+            e = np.asarray(e).ravel()
+            denom = np.linalg.norm(emb) * np.linalg.norm(e)
+            cos = float(np.dot(emb, e) / denom) if denom else -1e9
+            if cos > bestcos:
+                best, bestcos = name, cos
+        return {"nearest": best, "cosine": bestcos}
+
+    def _embed(self, text: str):
+        """text -> 3072-dim embedding via the user-supplied embedder (or None)."""
+        if self.text_embedder is None:
+            return None
+        try:
+            v = np.asarray(self.text_embedder(text), dtype=np.float64).ravel()
+            if v.size != D_TEXT_DIM:
+                v = np.resize(v, D_TEXT_DIM)
+            return v
+        except Exception as e:
+            self._log(f"text_embedder failed ({e})")
+            return None
 
     def _standin_grid(self, text: str) -> np.ndarray:
         """Deterministic hash-embedding: same text -> same grid, structured (not noise).
