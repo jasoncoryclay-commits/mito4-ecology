@@ -48,10 +48,10 @@ D_GRID, D_TEXT, MAX_SEQ = 400, 3072, 128
 
 if _TORCH:
     class _Attn(nn.Module):
-        def __init__(self):
+        def __init__(self, bias=False):
             super().__init__()
-            self.qkv = nn.Linear(D_MODEL, 3 * D_MODEL, bias=False)
-            self.out_proj = nn.Linear(D_MODEL, D_MODEL, bias=False)
+            self.qkv = nn.Linear(D_MODEL, 3 * D_MODEL, bias=bias)
+            self.out_proj = nn.Linear(D_MODEL, D_MODEL, bias=bias)
             self.nh = N_HEADS
 
         def forward(self, x):
@@ -62,25 +62,37 @@ if _TORCH:
             o = o.transpose(1, 2).reshape(B, T, C)
             return self.out_proj(o)
 
-    class _SwiGLU(nn.Module):
-        # ffn.w1,w3: 768->3072 ; ffn.w2: 3072->768   ->  w2( silu(w1 x) * w3 x )
-        def __init__(self, w_prefix="ffn"):
+    class _SwiGLUEnc(nn.Module):
+        # ENCODER ffn:  w1[3072,768] w2[768,3072] w3[3072,768]
+        #   -> w1,w3: 768->3072 ; w2: 3072->768 ;  w2( silu(w1 x) * w3 x )
+        def __init__(self, bias=False):
             super().__init__()
-            self.w1 = nn.Linear(D_MODEL, D_FF, bias=False)
-            self.w2 = nn.Linear(D_FF, D_MODEL, bias=False)
-            self.w3 = nn.Linear(D_MODEL, D_FF, bias=False)
-
+            self.w1 = nn.Linear(D_MODEL, D_FF, bias=bias)
+            self.w2 = nn.Linear(D_FF, D_MODEL, bias=bias)
+            self.w3 = nn.Linear(D_MODEL, D_FF, bias=bias)
         def forward(self, x):
             return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
-    class _Block(nn.Module):
-        def __init__(self, ffn_name="ffn"):
+    class _SwiGLUDec(nn.Module):
+        # DECODER ff:  w1[3072,768] w2[3072,768] w3[768,3072]
+        #   -> w1,w2: 768->3072 ; w3: 3072->768 ;  w3( silu(w1 x) * w2 x )
+        def __init__(self, bias=False):
             super().__init__()
-            self.norm1 = nn.LayerNorm(D_MODEL)
-            self.attn = _Attn()
-            self.norm2 = nn.LayerNorm(D_MODEL)
-            # encoder uses .ffn, decoder uses .ff — set attribute name to match keys
-            setattr(self, ffn_name, _SwiGLU())
+            self.w1 = nn.Linear(D_MODEL, D_FF, bias=bias)
+            self.w2 = nn.Linear(D_MODEL, D_FF, bias=bias)
+            self.w3 = nn.Linear(D_FF, D_MODEL, bias=bias)
+        def forward(self, x):
+            return self.w3(F.silu(self.w1(x)) * self.w2(x))
+
+    class _Block(nn.Module):
+        def __init__(self, ffn_name="ffn", bias=False):
+            super().__init__()
+            # LayerNorms: checkpoint has .weight but no .bias -> bias=False
+            self.norm1 = nn.LayerNorm(D_MODEL, bias=bias)
+            self.attn = _Attn(bias=bias)
+            self.norm2 = nn.LayerNorm(D_MODEL, bias=bias)
+            ffn = _SwiGLUEnc(bias=bias) if ffn_name == "ffn" else _SwiGLUDec(bias=bias)
+            setattr(self, ffn_name, ffn)
             self._ffn_name = ffn_name
 
         def forward(self, x):
@@ -93,15 +105,18 @@ if _TORCH:
         def __init__(self, d_text=D_TEXT):
             super().__init__()
             self.d_text = d_text
+            # ENCODER: no biases anywhere (checkpoint has weights only)
+            b = False
             self.text_proj = nn.Sequential(
-                nn.Linear(d_text, D_MODEL), nn.LayerNorm(D_MODEL),
-                nn.GELU(), nn.Linear(D_MODEL, D_MODEL))
+                nn.Linear(d_text, D_MODEL, bias=b), nn.LayerNorm(D_MODEL, bias=b),
+                nn.GELU(), nn.Linear(D_MODEL, D_MODEL, bias=b))
             self.pos_embed = nn.Embedding(MAX_SEQ, D_MODEL)
-            self.input_norm = nn.LayerNorm(D_MODEL)
-            self.blocks = nn.ModuleList([_Block("ffn") for _ in range(N_LAYERS)])
-            self.output_norm = nn.LayerNorm(D_MODEL)
+            self.input_norm = nn.LayerNorm(D_MODEL, bias=b)
+            self.blocks = nn.ModuleList([_Block("ffn", bias=b) for _ in range(N_LAYERS)])
+            self.output_norm = nn.LayerNorm(D_MODEL, bias=b)
             self.output_proj = nn.Sequential(
-                nn.Linear(D_MODEL, D_MODEL), nn.GELU(), nn.Linear(D_MODEL, D_GRID))
+                nn.Linear(D_MODEL, D_MODEL, bias=b), nn.GELU(),
+                nn.Linear(D_MODEL, D_GRID, bias=b))
 
         def forward(self, text_emb):            # (B, 3072)
             x = self.text_proj(text_emb).unsqueeze(1)     # (B,1,768)
@@ -118,14 +133,17 @@ if _TORCH:
         def __init__(self, d_text=D_TEXT):
             super().__init__()
             self.d_text = d_text
+            # DECODER: Linears HAVE biases (grid_proj.0.bias etc. present);
+            # LayerNorms have weight only -> LN bias=False. attn/ffn linears: no bias.
             self.grid_proj = nn.Sequential(
-                nn.Linear(D_GRID, D_MODEL), nn.LayerNorm(D_MODEL),
-                nn.GELU(), nn.Linear(D_MODEL, D_MODEL))
+                nn.Linear(D_GRID, D_MODEL, bias=True), nn.LayerNorm(D_MODEL, bias=False),
+                nn.GELU(), nn.Linear(D_MODEL, D_MODEL, bias=True))
             self.pos_embed = nn.Embedding(MAX_SEQ, D_MODEL)
-            self.blocks = nn.ModuleList([_Block("ff") for _ in range(N_LAYERS)])
-            self.text_out_norm = nn.LayerNorm(D_MODEL)
+            self.blocks = nn.ModuleList([_Block("ff", bias=False) for _ in range(N_LAYERS)])
+            self.text_out_norm = nn.LayerNorm(D_MODEL, bias=False)
             self.text_out_proj = nn.Sequential(
-                nn.Linear(D_MODEL, D_MODEL), nn.GELU(), nn.Linear(D_MODEL, d_text))
+                nn.Linear(D_MODEL, D_MODEL, bias=True), nn.GELU(),
+                nn.Linear(D_MODEL, d_text, bias=True))
 
         def forward(self, grid):                # (B,400)
             x = self.grid_proj(grid).unsqueeze(1)
