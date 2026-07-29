@@ -11,16 +11,9 @@
 #           make distclean  (also remove results/)
 
 NVCC      ?= nvcc
-# Auto-detect arch from the GPU name if ARCH not supplied.
-ARCH      ?= $(shell \
-	name=$$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1); \
-	case "$$name" in \
-	  *H100*|*H200*) echo sm_90 ;; \
-	  *A100*)        echo sm_80 ;; \
-	  *L40*|*4090*|*L4*) echo sm_89 ;; \
-	  *V100*)        echo sm_70 ;; \
-	  *)             echo sm_90 ;; \
-	esac)
+# Arch: default sm_90 (H100). Override with `make ARCH=sm_80` for A100, etc.
+# (run.sh / profile.sh auto-detect the arch from nvidia-smi when ARCH is unset.)
+ARCH      ?= sm_90
 NVCCFLAGS ?= -O3 -arch=$(ARCH)
 
 # Run parameters (override on the command line: make run H=16384 W=16384)

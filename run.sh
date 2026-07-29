@@ -12,8 +12,21 @@ TICKS="${TICKS:-5000}"
 LOG_EVERY="${LOG_EVERY:-100}"
 DUMP="${DUMP:-0}"               # 0 = no images; e.g. 250 = image every 250 ticks
 SEEDS="${SEEDS:-1 2 3 4 5}"
-ARCH="${ARCH:-sm_90}"           # sm_90 = Hopper/H100; sm_80 = A100; sm_89 = L40/4090
 OUTDIR="${OUTDIR:-results}"
+
+# ---- arch: auto-detect from the GPU name unless caller pinned ARCH ----
+detect_arch() {
+  local name
+  name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+  case "$name" in
+    *H100*|*H200*)      echo sm_90 ;;
+    *A100*)             echo sm_80 ;;
+    *L40*|*4090*|*L4*)  echo sm_89 ;;
+    *V100*)             echo sm_70 ;;
+    *)                  echo sm_90 ;;
+  esac
+}
+ARCH="${ARCH:-$(detect_arch)}"  # sm_90=H100  sm_80=A100  sm_89=L40/4090  sm_70=V100
 
 echo "=============================================="
 echo " MITO-4 ECOLOGY RUN"

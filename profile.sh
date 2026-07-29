@@ -16,7 +16,14 @@ H="${H:-2048}"            # keep small: profiling replays kernels and is SLOW
 W="${W:-2048}"
 TICKS="${TICKS:-30}"      # a handful of ticks is plenty to profile the kernels
 SEED="${SEED:-1}"
-ARCH="${ARCH:-sm_90}"
+detect_arch() {
+  local name; name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
+  case "$name" in
+    *H100*|*H200*) echo sm_90 ;; *A100*) echo sm_80 ;;
+    *L40*|*4090*|*L4*) echo sm_89 ;; *V100*) echo sm_70 ;; *) echo sm_90 ;;
+  esac
+}
+ARCH="${ARCH:-$(detect_arch)}"
 OUT="${OUT:-profile_out}"
 
 command -v nvcc >/dev/null 2>&1 || export PATH=/usr/local/cuda/bin:$PATH
