@@ -14,6 +14,18 @@ bash run.sh              # or:  make run
 Prefer `make`? `make quick` smoke-tests the pod in seconds; `make run` does the full sweep;
 `make arch` prints the auto-detected GPU arch; `make analyze` re-scores existing results.
 
+### One-shot: everything in a single command
+
+```bash
+make everything            # full 5-seed sweep -> profiling pass -> combined MITO4_REPORT.md
+```
+
+This runs the science sweep, then the ncu/nsys profiling pass, then stitches **one**
+`MITO4_REPORT.md` covering all three angles: science (H1–H4), throughput + GPU residency
+(H5, H6), and achieved DRAM bandwidth (Nsight Compute). Profiling failures (e.g. no ncu
+counter permission) do **not** abort the report — the science half is always produced.
+Already have results and just want the merged doc? `make report`.
+
 That builds the kernel, runs an **8192 × 8192 = 67,108,864 organism** lattice for 5000 ticks
 across seeds 1–5, captures throughput, and (if matplotlib is present) writes plots + a scored
 `SCORECARD.md` into `results/`.

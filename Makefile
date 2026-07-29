@@ -1,9 +1,11 @@
 # MITO-4 Ecology — Makefile
 # Targets:  make            (build)
+#           make everything (sweep + profile + single combined MITO4_REPORT.md)  <-- one-shot
 #           make run        (build + full 5-seed sweep + analyze via run.sh)
 #           make quick      (single short seed-1 run to smoke-test the pod)
 #           make analyze    (re-score existing results/)
 #           make profile    (ncu/nsys: achieved DRAM bandwidth + timeline)
+#           make report     (stitch existing results+profile into MITO4_REPORT.md)
 #           make arch       (print the detected GPU arch)
 #           make clean      (remove binary + build artifacts)
 #           make distclean  (also remove results/)
@@ -32,7 +34,7 @@ SEEDS     ?= 1 2 3 4 5
 BIN = mito4
 SRC = mito4_kernel.cu
 
-.PHONY: all run quick analyze profile arch clean distclean
+.PHONY: all everything run quick analyze profile report arch clean distclean
 
 all: $(BIN)
 
@@ -56,6 +58,22 @@ analyze:
 # Memory-bandwidth + timeline profiling (short run). Needs ncu and/or nsys.
 profile:
 	ARCH=$(ARCH) bash profile.sh
+
+# Stitch existing artifacts into one report (no runs).
+report:
+	python3 combine_report.py results profile_out MITO4_REPORT.md
+
+# ONE-SHOT: full sweep, then profiling, then combined report.
+# Profiling failures (e.g. no ncu perms) do not abort the report.
+everything:
+	H=$(H) W=$(W) TICKS=$(TICKS) LOG_EVERY=$(LOG_EVERY) DUMP=$(DUMP) \
+	  SEEDS="$(SEEDS)" ARCH=$(ARCH) bash run.sh
+	-ARCH=$(ARCH) bash profile.sh
+	python3 combine_report.py results profile_out MITO4_REPORT.md
+	@echo ""
+	@echo "=============================================="
+	@echo " ALL DONE -> MITO4_REPORT.md"
+	@echo "=============================================="
 
 arch:
 	@echo "Detected/selected ARCH = $(ARCH)"

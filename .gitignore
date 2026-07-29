@@ -1,5 +1,8 @@
-host_check
-*.o
-mito4
-__pycache__/
 *.csv
+*.o
+MITO4_REPORT.md
+__pycache__/
+host_check
+mito4
+profile_out/
+results/
