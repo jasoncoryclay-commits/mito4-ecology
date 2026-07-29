@@ -89,11 +89,12 @@ if _TORCH:
             return x
 
     class FoundationEncoder(nn.Module):
-        """text_embedding(3072) -> grid(400)."""
-        def __init__(self):
+        """text_embedding(d_text) -> grid(400). d_text auto-set from the checkpoint."""
+        def __init__(self, d_text=D_TEXT):
             super().__init__()
+            self.d_text = d_text
             self.text_proj = nn.Sequential(
-                nn.Linear(D_TEXT, D_MODEL), nn.LayerNorm(D_MODEL),
+                nn.Linear(d_text, D_MODEL), nn.LayerNorm(D_MODEL),
                 nn.GELU(), nn.Linear(D_MODEL, D_MODEL))
             self.pos_embed = nn.Embedding(MAX_SEQ, D_MODEL)
             self.input_norm = nn.LayerNorm(D_MODEL)
@@ -113,9 +114,10 @@ if _TORCH:
             return self.output_proj(x).squeeze(1)          # (B,400)
 
     class FoundationDecoder(nn.Module):
-        """grid(400) -> text_embedding(3072) (contrastive)."""
-        def __init__(self):
+        """grid(400) -> text_embedding(d_text) (contrastive). d_text from checkpoint."""
+        def __init__(self, d_text=D_TEXT):
             super().__init__()
+            self.d_text = d_text
             self.grid_proj = nn.Sequential(
                 nn.Linear(D_GRID, D_MODEL), nn.LayerNorm(D_MODEL),
                 nn.GELU(), nn.Linear(D_MODEL, D_MODEL))
@@ -123,7 +125,7 @@ if _TORCH:
             self.blocks = nn.ModuleList([_Block("ff") for _ in range(N_LAYERS)])
             self.text_out_norm = nn.LayerNorm(D_MODEL)
             self.text_out_proj = nn.Sequential(
-                nn.Linear(D_MODEL, D_MODEL), nn.GELU(), nn.Linear(D_MODEL, D_TEXT))
+                nn.Linear(D_MODEL, D_MODEL), nn.GELU(), nn.Linear(D_MODEL, d_text))
 
         def forward(self, grid):                # (B,400)
             x = self.grid_proj(grid).unsqueeze(1)
@@ -148,17 +150,29 @@ def _extract_sd(obj):
 
 def load_encoder(path, device="cpu"):
     obj = torch.load(path, map_location=device, weights_only=False)
-    m = FoundationEncoder()
-    missing, unexpected = m.load_state_dict(_extract_sd(obj), strict=False)
+    sd = _extract_sd(obj)
+    # auto-detect text dim from text_proj.0.weight in_features (ground truth)
+    d_text = D_TEXT
+    for k, v in sd.items():
+        if k.startswith("text_proj") and k.endswith(".weight") and hasattr(v, "shape") and v.ndim == 2:
+            d_text = int(v.shape[1]); break
+    m = FoundationEncoder(d_text=d_text)
+    missing, unexpected = m.load_state_dict(sd, strict=False)
     m.eval().to(device)
-    return m, {"missing": list(missing), "unexpected": list(unexpected)}
+    return m, {"missing": list(missing), "unexpected": list(unexpected), "d_text": d_text}
 
 def load_decoder(path, device="cpu"):
     obj = torch.load(path, map_location=device, weights_only=False)
-    m = FoundationDecoder()
-    missing, unexpected = m.load_state_dict(_extract_sd(obj), strict=False)
+    sd = _extract_sd(obj)
+    # auto-detect text dim from the last text_out_proj weight out_features
+    d_text = D_TEXT
+    cand = sorted(k for k in sd if k.startswith("text_out_proj") and k.endswith(".weight"))
+    if cand and hasattr(sd[cand[-1]], "shape"):
+        d_text = int(sd[cand[-1]].shape[0])
+    m = FoundationDecoder(d_text=d_text)
+    missing, unexpected = m.load_state_dict(sd, strict=False)
     m.eval().to(device)
-    return m, {"missing": list(missing), "unexpected": list(unexpected)}
+    return m, {"missing": list(missing), "unexpected": list(unexpected), "d_text": d_text}
 
 
 if __name__ == "__main__":
