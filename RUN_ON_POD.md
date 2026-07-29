@@ -98,3 +98,33 @@ pip install matplotlib numpy     # numpy only needed for snapshot PNG conversion
 - **Throughput**: H100 should clear the ≥20 Gcups pre-committed target (H5).
 
 Pre-committed pass/fail thresholds live in `EXPERIMENT_CARD.md`; `analyze.py` scores them automatically.
+
+## Real efficiency: achieved memory bandwidth (`make profile`)
+
+`nvidia-smi` SM%% (H6) only tells you a kernel was *resident*, not how *efficient* it was. For a
+bandwidth-bound kernel like MITO-4, the true saturation number is **achieved DRAM bandwidth as a %%
+of peak**. Get it with:
+
+```bash
+make profile                       # short run (2048², 30 ticks) under the profiler
+# or:  H=4096 W=4096 TICKS=50 bash profile.sh
+```
+
+Outputs land in `profile_out/`:
+- `ncu_mito4.csv` / `ncu_summary.txt` — per-kernel `dram__throughput ... pct_of_peak` (the headline
+  number), plus SM throughput and occupancy. The script prints a one-line-per-kernel summary.
+- `nsys_report.*` — a timeline you open in the Nsight Systems GUI.
+
+**How to read it (roofline intuition):**
+- `k_diffuse` (the resource stencil) and `k_metabolize` are memory-bound → **DRAM%% should be high
+  (roughly 70–90%+ on an H100)** while SM%% stays lower. That is the *good* outcome — the card is
+  moving memory as fast as it can, which is the ceiling for this workload.
+- If DRAM%% is low AND SM%% is low, the kernel is latency/occupancy-bound → raise the block size or
+  lattice size so more warps hide memory latency.
+- `k_divide` uses `atomicCAS` on contended cells; under heavy crowding its efficiency drops — expect
+  it to be the least efficient kernel, which is expected and fine (it runs 4 short passes).
+
+**Note:** `ncu` often needs elevated GPU counter permissions. On a locked-down pod you may see
+`ERR_NVGPUCTRPERM`; run the pod as root or add `--cap-add=SYS_ADMIN` / set the driver's
+`NVreg_RestrictProfilingToAdminUsers=0`. `profile_out/ncu_stderr.log` will tell you if that's the issue.
+The `nsys` timeline usually works without special permissions and still shows kernel time breakdown.

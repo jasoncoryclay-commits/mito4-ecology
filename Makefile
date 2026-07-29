@@ -3,6 +3,7 @@
 #           make run        (build + full 5-seed sweep + analyze via run.sh)
 #           make quick      (single short seed-1 run to smoke-test the pod)
 #           make analyze    (re-score existing results/)
+#           make profile    (ncu/nsys: achieved DRAM bandwidth + timeline)
 #           make arch       (print the detected GPU arch)
 #           make clean      (remove binary + build artifacts)
 #           make distclean  (also remove results/)
@@ -31,7 +32,7 @@ SEEDS     ?= 1 2 3 4 5
 BIN = mito4
 SRC = mito4_kernel.cu
 
-.PHONY: all run quick analyze arch clean distclean
+.PHONY: all run quick analyze profile arch clean distclean
 
 all: $(BIN)
 
@@ -52,12 +53,16 @@ quick: $(BIN)
 analyze:
 	python3 analyze.py results
 
+# Memory-bandwidth + timeline profiling (short run). Needs ncu and/or nsys.
+profile:
+	ARCH=$(ARCH) bash profile.sh
+
 arch:
 	@echo "Detected/selected ARCH = $(ARCH)"
 	@nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo "(no nvidia-smi)"
 
 clean:
-	rm -f $(BIN) *.o snapshot_*.pgm
+	rm -f $(BIN) mito4_prof *.o snapshot_*.pgm
 
 distclean: clean
-	rm -rf results
+	rm -rf results profile_out
