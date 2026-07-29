@@ -1,13 +1,13 @@
-# build artifacts
-*.o
-host_check
-mito4
-mito4_prof
-__pycache__/
-
-# stray top-level snapshots (the real ones live in results/)
-/snapshot_*.pgm
-/snapshot_*.png
 
 # NOTE: results/ and profile_out/ are intentionally NOT ignored — push them
 # back so the run data and MITO4_REPORT.md are shareable.
+# build artifacts
+# stray top-level snapshots (the real ones live in results/)
+*.o
+.emb_cache/
+/snapshot_*.pgm
+/snapshot_*.png
+__pycache__/
+host_check
+mito4
+mito4_prof
