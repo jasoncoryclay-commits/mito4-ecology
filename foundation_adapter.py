@@ -167,6 +167,24 @@ class FoundationAdapter:
                             return m
         return None
 
+    def text_to_grid_raw(self, text: str):
+        """Encoder's NATIVE grid output (no normalization). This is what the DECODER
+        was trained to consume. Returns (400,) float or None if no real encoder."""
+        if self._enc is None:
+            return None
+        emb = self._embed(text)
+        if emb is None:
+            return None
+        try:
+            import torch
+            with torch.no_grad():
+                t = torch.as_tensor(emb, dtype=torch.float32,
+                                    device=self._device).reshape(1, -1)
+                return self._enc(t).squeeze(0).detach().cpu().numpy()
+        except Exception as e:
+            self._log(f"raw encode failed ({e})")
+            return None
+
     # ---- the stable contract ----
     def text_to_grid(self, text: str) -> np.ndarray:
         # real torch encoder: needs a 3072-dim text embedding
