@@ -11,10 +11,12 @@
 #           make distclean  (also remove results/)
 
 NVCC      ?= nvcc
-# Arch: default sm_90 (H100). Override with `make ARCH=sm_80` for A100, etc.
-# (run.sh / profile.sh auto-detect the arch from nvidia-smi when ARCH is unset.)
-ARCH      ?= sm_90
-NVCCFLAGS ?= -O3 -arch=$(ARCH)
+# Arch: leave EMPTY by default so run.sh/profile.sh auto-detect from nvidia-smi
+# (H100->sm_90, A100->sm_80, L40/4090->sm_89, V100->sm_70).
+# Override explicitly if needed:  make ARCH=sm_80
+ARCH      ?=
+ARCH_FLAG := $(if $(ARCH),-arch=$(ARCH),-arch=sm_80)
+NVCCFLAGS ?= -O3 $(ARCH_FLAG)
 
 # Run parameters (override on the command line: make run H=16384 W=16384)
 H         ?= 8192
@@ -38,7 +40,7 @@ $(BIN): $(SRC)
 # Full experiment via run.sh (handles logging + analysis + GPU util capture)
 run:
 	H=$(H) W=$(W) TICKS=$(TICKS) LOG_EVERY=$(LOG_EVERY) DUMP=$(DUMP) \
-	SEEDS="$(SEEDS)" ARCH=$(ARCH) bash run.sh
+	SEEDS="$(SEEDS)" ARCH="$(ARCH)" bash run.sh
 
 # Fast smoke test: small lattice, few ticks, one seed — confirms the pod works.
 quick: $(BIN)
@@ -50,7 +52,7 @@ analyze:
 
 # Memory-bandwidth + timeline profiling (short run). Needs ncu and/or nsys.
 profile:
-	ARCH=$(ARCH) bash profile.sh
+	ARCH="$(ARCH)" bash profile.sh
 
 # Stitch existing artifacts into one report (no runs).
 report:
@@ -60,8 +62,8 @@ report:
 # Profiling failures (e.g. no ncu perms) do not abort the report.
 everything:
 	H=$(H) W=$(W) TICKS=$(TICKS) LOG_EVERY=$(LOG_EVERY) DUMP=$(DUMP) \
-	  SEEDS="$(SEEDS)" ARCH=$(ARCH) bash run.sh
-	-ARCH=$(ARCH) bash profile.sh
+	  SEEDS="$(SEEDS)" ARCH="$(ARCH)" bash run.sh
+	-ARCH="$(ARCH)" bash profile.sh
 	python3 combine_report.py results profile_out MITO4_REPORT.md
 	@echo ""
 	@echo "=============================================="
@@ -69,8 +71,16 @@ everything:
 	@echo "=============================================="
 
 arch:
-	@echo "Detected/selected ARCH = $(ARCH)"
+	@echo "Makefile ARCH override = '$(ARCH)' (empty => scripts auto-detect)"
 	@nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo "(no nvidia-smi)"
+	@name=$$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1); \
+	 case "$$name" in \
+	   *H100*|*H200*) echo "auto-detect -> sm_90" ;; \
+	   *A100*) echo "auto-detect -> sm_80" ;; \
+	   *L40*|*4090*|*L4*) echo "auto-detect -> sm_89" ;; \
+	   *V100*) echo "auto-detect -> sm_70" ;; \
+	   *) echo "auto-detect -> sm_90 (default)" ;; \
+	 esac
 
 clean:
 	rm -f $(BIN) mito4_prof *.o snapshot_*.pgm

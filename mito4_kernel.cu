@@ -50,7 +50,8 @@ __host__ __device__ __forceinline__ int idx(int y,int x,int H,int W){
 }
 
 // cheap per-cell/per-tick hash RNG (deterministic, seed-driven)
-__device__ __forceinline__ uint32_t hash_u32(uint32_t a){
+// __host__ __device__ so main() can use it to seed the initial grid on the host.
+__host__ __device__ __forceinline__ uint32_t hash_u32(uint32_t a){
     a ^= a>>16; a *= 0x7feb352du; a ^= a>>15; a *= 0x846ca68bu; a ^= a>>16; return a;
 }
 __device__ __forceinline__ float rand01(uint32_t seed,uint32_t cell,uint32_t tick,uint32_t salt){
