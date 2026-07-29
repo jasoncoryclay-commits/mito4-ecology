@@ -85,4 +85,39 @@ given.
 ```bash
 python3 mito4_mia_bridge.py     # demo: determinism, gating, return, exceed-itself, verbalized text
 python3 test_mia_bridge.py      # 9 constraint tests (all green)
+python3 mito4_shard_adapter.py  # full path: text -> FOUNDATION -> MITO-4 -> gated advisory frame
 ```
+
+## Wiring to the REAL FOUNDATION shard (on the pod)
+
+The bridge no longer assumes a random grid. Three new files bind it to the live
+`foundation_model` shard, with a deterministic stand-in so it stays testable off-pod:
+
+| File | Role |
+|---|---|
+| `foundation_probe.py` | Read-only introspection of `/workspace/foundation_model`: finds the grid shape, value range, and encode/decode API. Writes `foundation_probe.json`. |
+| `foundation_adapter.py` | Binds to whatever the probe found (handles 400-vec vs 20x20, logits vs sigmoid, torch vs numpy); normalizes to the 20x20/[0,1] contract. Falls back to a deterministic hash-embedding stand-in when the model is absent. |
+| `mito4_shard_adapter.py` | The `SHARD_ADAPTER` from MIA_HDL as code: `text → FOUNDATION grid → MITO-4 → AdvisoryFrame`, with enable/stop pins (tri-state when gated) and a token-budget cap (≤25% of prompt). |
+
+### Validate on the pod (against the real model)
+
+```bash
+# 1. discover the real FOUNDATION interface (read-only)
+python3 foundation_probe.py            # or pass the path if non-standard
+# 2. adapter binds to it (mode should print 'real', not 'standin')
+python3 foundation_adapter.py
+# 3. full advisory path on the real grid
+python3 mito4_shard_adapter.py
+```
+
+If `foundation_adapter` prints `mode = real`, MITO-4 is animating Mia's *actual* grids.
+If the probe reveals a different grid shape or range than assumed, `_normalize_to_grid`
+already coerces to the contract — but check `foundation_probe.json`'s `grid_hints` and, if
+needed, tell me the real encode/decode signatures so I can bind them precisely.
+
+### The advisory FRAME (what the ARBITER receives)
+
+`Mito4Shard.observe(text)` returns an `AdvisoryFrame` whose ONLY context-bound field is
+`verbalized`. Everything else (`return_shift`, `novelty`, `lineages`, `grid_hash`, …) is
+**provenance** for the append-only readings db — never entering her prompt. A gated shard
+returns `verbalized=None` (electrically absent).

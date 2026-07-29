@@ -1,0 +1,5 @@
+{
+  "root": null,
+  "found_root": false,
+  "error": "FOUNDATION model dir not found. Pass the path: python3 foundation_probe.py /workspace/foundation_model"
+}
